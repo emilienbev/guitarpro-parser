@@ -1,0 +1,56 @@
+{
+  "name": "guitarpro-parser",
+  "version": "1.0.1",
+  "author": "Emilien Bevierre",
+  "repository": "github:emilienbev/guitarpro-parser",
+  "bugs": {
+    "url": "https://github.com/emilienbev/guitarpro-parser/issues"
+  },
+  "description": "Pure JavaScript parser for Guitar Pro files (.gp, .gpx, .gp5). Zero native dependencies, works in browser and Node.js.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "guitar-pro",
+    "gpx",
+    "gp5",
+    "gp7",
+    "tablature",
+    "tab",
+    "parser",
+    "music",
+    "guitar"
+  ],
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "linkedom": "^0.18.9"
+  }
+}
