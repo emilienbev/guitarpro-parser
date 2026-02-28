@@ -1,6 +1,6 @@
 # guitarpro-parser
 
-Parse Guitar Pro files (`.gp`, `.gpx`, `.gp5`) in JavaScript. Works in Node.js and browsers. No native dependencies.
+Parse Guitar Pro files (`.gp`, `.gpx`, `.gp5`, `.gp3`) in JavaScript. Works in Node.js and browsers. No native dependencies.
 
 ## Installation
 
@@ -38,6 +38,9 @@ for (const track of song.tracks) {
   // Tuning as Note[] (low to high)
   const tuningNames = track.tuning.map(note => note.name);
   console.log(tuningNames);  // ["E", "A", "D", "G", "B", "E"]
+  
+  // Raw MIDI pitch numbers per string (useful for audio synthesis)
+  console.log(track.tuningMidi);  // [40, 45, 50, 55, 59, 64]
   
   console.log(track.capoFret);  // 0
   console.log(track.bars.length);  // 92
@@ -94,6 +97,7 @@ const song = parseTabFile(data);
 | GP7+   | `.gp`     | Guitar Pro 7, 8   |
 | GPX    | `.gpx`    | Guitar Pro 6      |
 | GP5    | `.gp5`    | Guitar Pro 5      |
+| GP3    | `.gp3`    | Guitar Pro 3      |
 
 Format is auto-detected from file header.
 
@@ -108,7 +112,7 @@ parseTabFile(data: Uint8Array, fileName?: string): TabSong
 Detect format without parsing.
 
 ```ts
-detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5'
+detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5' | 'gp3'
 ```
 
 Format-specific parsers if you know the format in advance.
@@ -116,6 +120,7 @@ Format-specific parsers if you know the format in advance.
 ```ts
 parseGpxFile(data: Uint8Array): TabSong
 parseGp5File(data: Uint8Array): TabSong
+parseGp3File(data: Uint8Array): TabSong
 ```
 
 Convert rhythm to beat fractions (quarter note = 1.0).
@@ -129,6 +134,16 @@ durationToBeats('quarter', 0, { num: 3, den: 2 });  // 0.666... (triplet)
 Get beat duration in milliseconds at its tempo.
 ```ts
 beatDurationMs(beat: TabBeat): number
+```
+
+Calculate musical beat position within a bar (1-based).
+```ts
+musicalBeatPosition(bar: TabBar, beatIdx: number): number
+```
+
+Get the number of musical beats in a bar.
+```ts
+barMusicalBeatCount(bar: TabBar): number
 ```
 
 ## Type Definitions
@@ -146,6 +161,7 @@ interface TabTrack {
   id: string;
   name: string;
   tuning: Note[];           // Low to high
+  tuningMidi: number[];     // Raw MIDI pitch numbers per string (index 0 = lowest string)
   capoFret: number;
   bars: TabBar[];
 }
