@@ -22,6 +22,7 @@
  * - .gpx  → BCFZ/BCFS container (Guitar Pro 6)
  * - .gp   → ZIP container with Content/score.gpif (Guitar Pro 7+)
  * - .gp5  → Legacy sequential binary (Guitar Pro 5)
+ * - .gp3  → Legacy sequential binary (Guitar Pro 3)
  *
  * Pure, zero native dependencies.
  */
@@ -29,6 +30,7 @@
 import type { TabSong } from './types.js';
 import { parseGpxFile, gpifToTabSong } from './gpx-parser.js';
 import { parseGp5File } from './gp5-parser.js';
+import { parseGp3File } from './gp3-parser.js';
 import { getDOMParser } from './dom.js';
 
 // ---------------------------------------------------------------------------
@@ -354,7 +356,7 @@ function parseGp7File(data: Uint8Array): TabSong {
 // ---------------------------------------------------------------------------
 
 /** Detects file format from header bytes and filename. */
-function detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5' {
+function detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5' | 'gp3' {
 	if (data.length < 4) {
 		throw new Error('File too small to be a valid Guitar Pro file');
 	}
@@ -371,11 +373,12 @@ function detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5
 		return 'gp7';
 	}
 
-	// Check for GP5 version string: first byte is string length, followed by "FICHIER GUITAR PRO"
+	// Check for GP3/GP4/GP5 version string: first byte is string length, followed by "FICHIER GUITAR PRO"
 	const strLen = data[0];
 	if (strLen > 10 && strLen < 50 && data.byteLength > strLen + 1) {
 		const versionStr = String.fromCharCode(...Array.from(data.subarray(1, 1 + Math.min(strLen, 40))));
 		if (versionStr.includes('GUITAR PRO')) {
+			if (versionStr.includes('v3.')) return 'gp3';
 			return 'gp5';
 		}
 	}
@@ -384,7 +387,8 @@ function detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5
 	if (fileName) {
 		const ext = fileName.toLowerCase();
 		if (ext.endsWith('.gpx')) return 'gpx';
-		if (ext.endsWith('.gp5') || ext.endsWith('.gp4') || ext.endsWith('.gp3')) return 'gp5';
+		if (ext.endsWith('.gp3')) return 'gp3';
+		if (ext.endsWith('.gp5') || ext.endsWith('.gp4')) return 'gp5';
 		if (ext.endsWith('.gp')) return 'gp7';
 	}
 
@@ -399,7 +403,7 @@ function detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5
  * Parses any supported Guitar Pro file format into a TabSong.
  * Detects format automatically from file header bytes.
  *
- * Supported: .gpx (GP6), .gp (GP7+), .gp5 (GP5)
+ * Supported: .gpx (GP6), .gp (GP7+), .gp5 (GP5), .gp3 (GP3)
  */
 export function parseTabFile(data: Uint8Array, fileName?: string): TabSong {
 	const format = detectFormat(data, fileName);
@@ -411,6 +415,8 @@ export function parseTabFile(data: Uint8Array, fileName?: string): TabSong {
 			return parseGp7File(data);
 		case 'gp5':
 			return parseGp5File(data);
+		case 'gp3':
+			return parseGp3File(data);
 	}
 }
 

@@ -79,6 +79,33 @@ export function beatDurationMs(beat: TabBeat): number {
 	return beatFraction * quarterNoteMs;
 }
 
+/**
+ * Computes which musical beat (1-based) a tab-beat falls on within its bar.
+ * Musical beats are defined by the time signature: in 4/4 there are 4 beats,
+ * in 6/8 there are 6 beats, etc. A "beat" in the time signature has a duration
+ * of (4 / denominator) quarter notes (e.g. 1.0 for /4, 0.5 for /8).
+ *
+ * @param bar       The bar containing the beat
+ * @param beatIdx   Index of the tab-beat within bar.beats
+ * @returns 1-based musical beat number (clamped to numerator)
+ */
+export function musicalBeatPosition(bar: TabBar, beatIdx: number): number {
+	const { numerator, denominator } = bar.timeSignature;
+	const musicalBeatDuration = 4 / denominator; // in quarter notes
+	let cumulative = 0;
+	for (let i = 0; i < beatIdx && i < bar.beats.length; i++) {
+		const b = bar.beats[i];
+		cumulative += durationToBeats(b.duration, b.dotted, b.tuplet);
+	}
+	const musicalBeat = Math.floor(cumulative / musicalBeatDuration) + 1;
+	return Math.min(musicalBeat, numerator);
+}
+
+/** Returns the number of musical beats in a bar (the time signature numerator). */
+export function barMusicalBeatCount(bar: TabBar): number {
+	return bar.timeSignature.numerator;
+}
+
 // ---------------------------------------------------------------------------
 // BCFZ / BCFS binary decoder — pure DataView, no jDataView / Node deps
 // ---------------------------------------------------------------------------
@@ -642,6 +669,31 @@ function transformTrackElement(
 		}
 	}
 
+	// Fallback: check Staves > Staff > Properties for CapoFret (GP7+ layout)
+	if (capoFret === 0) {
+		const staffProps = trackEl.querySelector(':scope > Staves > Staff > Properties');
+		if (staffProps) {
+			const capoProp = findProperty(staffProps, 'CapoFret');
+			if (capoProp) {
+				const fretEl = capoProp.querySelector('Fret');
+				if (fretEl?.textContent) {
+					const parsed = parseInt(fretEl.textContent.trim(), 10);
+					if (!isNaN(parsed)) capoFret = parsed;
+				}
+			}
+			// Also use Staff Properties for tuning if direct Properties had none
+			if (!propsEl) {
+				const tuningProp = findProperty(staffProps, 'Tuning');
+				if (tuningProp) {
+					const pitchesEl = tuningProp.querySelector('Pitches');
+					if (pitchesEl?.textContent) {
+						tuningPitches = parseTuningPitches(pitchesEl.textContent.trim());
+					}
+				}
+			}
+		}
+	}
+
 	// Convert MIDI pitches to Note[] (reversed: GPX stores high-to-low, we want low-to-high)
 	const tuning: Note[] = tuningPitches
 		.map((midi) => noteFromPitchClass(midiToPitchClass(midi)))
@@ -651,6 +703,7 @@ function transformTrackElement(
 	const trackIndex = parseInt(trackId, 10);
 	let globalBeatIndex = 0;
 	const bars: TabBar[] = [];
+	const trackBeatIds: string[] = [];
 
 	for (let mbIdx = 0; mbIdx < masterBarEls.length; mbIdx++) {
 		const masterBarEl = masterBarEls[mbIdx];
@@ -711,6 +764,7 @@ function transformTrackElement(
 				for (const beatId of voiceBeatIds) {
 					const beatEl = beatMap.get(beatId);
 					if (!beatEl) continue;
+					trackBeatIds.push(beatId);
 
 					// Resolve rhythm
 					const rhythmRef = beatEl.querySelector(':scope > Rhythm')?.getAttribute('ref');
@@ -779,12 +833,33 @@ function transformTrackElement(
 		});
 	}
 
+	// Fallback: scan this track's beat FreeText for capo annotations (e.g. "capo 4th fret")
+	if (capoFret === 0) {
+		const capoPattern = /capo\s+(\d+)/i;
+		for (const beatId of trackBeatIds) {
+			const beatEl = beatMap.get(beatId);
+			if (!beatEl) continue;
+			const freeText = childText(beatEl, 'FreeText');
+			if (freeText) {
+				const match = capoPattern.exec(freeText);
+				if (match) {
+					const parsed = parseInt(match[1], 10);
+					if (!isNaN(parsed) && parsed > 0 && parsed <= 24) {
+						capoFret = parsed;
+						break;
+					}
+				}
+			}
+		}
+	}
+
 	return {
 		id: trackId,
 		name: childText(trackEl, 'Name') ?? 'Track',
 		shortName: childText(trackEl, 'ShortName') ?? '',
 		instrument: trackEl.querySelector(':scope > Instrument')?.getAttribute('ref') ?? null,
 		tuning,
+		tuningMidi: [...tuningPitches].reverse(),
 		capoFret,
 		bars
 	};

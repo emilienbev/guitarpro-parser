@@ -17,7 +17,7 @@
 /**
  * guitarpro-parser — Pure JavaScript parser for Guitar Pro files.
  *
- * Supports .gpx (GP6), .gp (GP7+), and .gp5 (GP5) formats.
+ * Supports .gpx (GP6), .gp (GP7+), .gp5 (GP5), and .gp3 (GP3) formats.
  * Works in both browser and Node.js environments.
  *
  * @example
@@ -35,8 +35,9 @@
 export { parseTabFile, detectFormat } from './tab-parser.js';
 
 // Format-specific parsers
-export { parseGpxFile, gpifToTabSong, durationToBeats, beatDurationMs } from './gpx-parser.js';
+export { parseGpxFile, gpifToTabSong, durationToBeats, beatDurationMs, musicalBeatPosition, barMusicalBeatCount } from './gpx-parser.js';
 export { parseGp5File } from './gp5-parser.js';
+export { parseGp3File } from './gp3-parser.js';
 
 // Types
 export type {

@@ -1,12 +1,12 @@
 {
   "name": "guitarpro-parser",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Emilien Bevierre",
   "repository": "github:emilienbev/guitarpro-parser",
   "bugs": {
     "url": "https://github.com/emilienbev/guitarpro-parser/issues"
   },
-  "description": "Pure JavaScript parser for Guitar Pro files (.gp, .gpx, .gp5). Zero native dependencies, works in browser and Node.js.",
+  "description": "Pure JavaScript parser for Guitar Pro files (.gp, .gpx, .gp5, .gp3). Zero native dependencies, works in browser and Node.js.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -37,6 +37,7 @@
     "guitar-pro",
     "gpx",
     "gp5",
+    "gp3",
     "gp7",
     "tablature",
     "tab",

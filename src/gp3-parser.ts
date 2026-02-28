@@ -15,12 +15,18 @@
  */
 
 /**
- * GP5 parser : decodes Guitar Pro 5 (.gp5) binary files and transforms them
+ * GP3 parser : decodes Guitar Pro 3 (.gp3) binary files and transforms them
  * into TabSong structures. Pure, zero native dependencies.
  *
  * Pipeline: Uint8Array → sequential binary read → TabSong
  *
- * Based on the PyGuitarPro format specification (GP3→GP4→GP5 inheritance chain).
+ * Based on the PyGuitarPro GP3 format specification.
+ * GP3 is the simplest of the Guitar Pro legacy binary formats:
+ * - 1 voice per measure (vs 2 in GP5)
+ * - No lyrics, RSE, page setup, or directions blocks
+ * - Simpler beat/note effects (single flag byte each)
+ * - No second note flags byte
+ * - Tremolo bar is a simple Int value (dip only)
  */
 
 import type { PitchClass, Note } from './pitch.js';
@@ -38,7 +44,7 @@ import type {
 // Binary reader — sequential LE reader with position tracking
 // ---------------------------------------------------------------------------
 
-class GP5Reader {
+class GP3Reader {
 	private view: DataView;
 	private buf: Uint8Array;
 	private pos: number;
@@ -87,12 +93,6 @@ class GP5Reader {
 		return v;
 	}
 
-	readDouble(): number {
-		const v = this.view.getFloat64(this.pos, true);
-		this.pos += 8;
-		return v;
-	}
-
 	/** Reads IntByteSizeString: int(strLen+1) + byte(strLen) + chars. */
 	readIntByteSizeString(): string {
 		const totalSize = this.readInt();
@@ -101,13 +101,6 @@ class GP5Reader {
 		const padding = Math.max(0, totalSize - 1 - strLen);
 		this.skip(padding);
 		return str;
-	}
-
-	/** Reads IntSizeString: int(len) + chars. */
-	readIntString(): string {
-		const len = this.readInt();
-		if (len <= 0) return '';
-		return this.readChars(len);
 	}
 
 	/** Reads ByteSizeString with fixed buffer length. */
@@ -127,32 +120,6 @@ class GP5Reader {
 		this.pos += length;
 		return String.fromCharCode(...chars);
 	}
-}
-
-// ---------------------------------------------------------------------------
-// GP version detection
-// ---------------------------------------------------------------------------
-
-interface GP5Version {
-	major: number;
-	minor: number;
-	patch: number;
-}
-
-function parseVersionString(versionStr: string): GP5Version {
-	const match = versionStr.match(/v(\d+)\.(\d+)/);
-	if (!match) return { major: 5, minor: 10, patch: 0 };
-	return {
-		major: parseInt(match[1], 10),
-		minor: parseInt(match[2], 10),
-		patch: 0
-	};
-}
-
-function versionGreaterThan(v: GP5Version, major: number, minor: number, patch: number): boolean {
-	if (v.major !== major) return v.major > major;
-	if (v.minor !== minor) return v.minor > minor;
-	return v.patch > patch;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,18 +158,6 @@ const TUPLET_MAP: Record<number, { num: number; den: number }> = {
 };
 
 // ---------------------------------------------------------------------------
-// Harmonic type mapping
-// ---------------------------------------------------------------------------
-
-const HARMONIC_TYPE_MAP: Record<number, string> = {
-	1: 'Natural',
-	2: 'Artificial',
-	3: 'Tapped',
-	4: 'Pinch',
-	5: 'Semi'
-};
-
-// ---------------------------------------------------------------------------
 // MIDI channel info
 // ---------------------------------------------------------------------------
 
@@ -217,7 +172,7 @@ interface MidiChannel {
 }
 
 // ---------------------------------------------------------------------------
-// Measure header (parsed from the measure header block)
+// Measure header
 // ---------------------------------------------------------------------------
 
 interface MeasureHeader {
@@ -230,7 +185,6 @@ interface MeasureHeader {
 	keySignature: number;
 	keyMode: number;
 	hasDoubleBar: boolean;
-	tripletFeel: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +207,7 @@ interface TrackHeader {
 // Internal beat/note structures used during parsing
 // ---------------------------------------------------------------------------
 
-interface GP5ParsedNote {
+interface GP3ParsedNote {
 	string: number;
 	fret: number;
 	isTied: boolean;
@@ -261,42 +215,35 @@ interface GP5ParsedNote {
 	velocity: number;
 	hammerOn: boolean;
 	letRing: boolean;
-	slide: number | null;
-	harmonic: string | null;
-	palmMute: boolean;
-	vibrato: boolean;
+	slide: boolean;
 	bend: { type: number; value: number; points: { position: number; value: number; vibrato: boolean }[] } | null;
-	staccato: boolean;
-	heavyAccent: boolean;
-	accent: boolean;
-	trill: { fret: number; period: number } | null;
-	tremoloPicking: number | null;
 }
 
-interface GP5ParsedBeat {
+interface GP3ParsedBeat {
 	duration: Duration;
 	dotted: boolean;
 	tuplet: { num: number; den: number } | null;
 	isRest: boolean;
 	isEmpty: boolean;
-	notes: GP5ParsedNote[];
+	notes: GP3ParsedNote[];
 }
 
 // ---------------------------------------------------------------------------
-// Read helpers — individual GP binary sections
+// Read helpers — individual GP3 binary sections
 // ---------------------------------------------------------------------------
 
-function readInfo(r: GP5Reader): { title: string; subtitle: string; artist: string; album: string } {
+/** GP3 readInfo: 8 fields (no separate "music" field). */
+function readInfo(r: GP3Reader): { title: string; subtitle: string; artist: string; album: string } {
 	const title = r.readIntByteSizeString();
 	const subtitle = r.readIntByteSizeString();
 	const artist = r.readIntByteSizeString();
 	const album = r.readIntByteSizeString();
-	r.readIntByteSizeString(); // words
-	r.readIntByteSizeString(); // music
+	r.readIntByteSizeString(); // words (= music in GP3)
 	r.readIntByteSizeString(); // copyright
 	r.readIntByteSizeString(); // tab
 	r.readIntByteSizeString(); // instructions
 
+	// Notice lines
 	const noticeCount = r.readInt();
 	for (let i = 0; i < noticeCount; i++) {
 		r.readIntByteSizeString();
@@ -305,49 +252,7 @@ function readInfo(r: GP5Reader): { title: string; subtitle: string; artist: stri
 	return { title, subtitle, artist, album };
 }
 
-function readLyrics(r: GP5Reader): void {
-	r.readInt(); // lyric track
-	for (let i = 0; i < 5; i++) {
-		r.readInt(); // start bar
-		r.readIntString(); // text
-	}
-}
-
-function readRSEMasterEffect(r: GP5Reader, version: GP5Version): void {
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		r.readInt(); // master volume
-		r.readInt(); // unknown
-		readEqualizer(r, 11);
-	}
-}
-
-function readEqualizer(r: GP5Reader, bands: number): void {
-	for (let i = 0; i < bands; i++) {
-		r.readSignedByte();
-	}
-}
-
-function readPageSetup(r: GP5Reader): void {
-	r.readInt(); // width
-	r.readInt(); // height
-	r.readInt(); // margin left
-	r.readInt(); // margin right
-	r.readInt(); // margin top
-	r.readInt(); // margin bottom
-	r.readInt(); // score size proportion
-	r.readShort(); // header/footer flags
-	for (let i = 0; i < 10; i++) {
-		r.readIntByteSizeString(); // template strings
-	}
-}
-
-function readDirections(r: GP5Reader): void {
-	for (let i = 0; i < 19; i++) {
-		r.readShort();
-	}
-}
-
-function readMidiChannels(r: GP5Reader): MidiChannel[] {
+function readMidiChannels(r: GP3Reader): MidiChannel[] {
 	const channels: MidiChannel[] = [];
 	for (let i = 0; i < 64; i++) {
 		const instrument = r.readInt();
@@ -363,16 +268,12 @@ function readMidiChannels(r: GP5Reader): MidiChannel[] {
 	return channels;
 }
 
-function readMeasureHeaders(r: GP5Reader, count: number, _version: GP5Version): MeasureHeader[] {
+function readMeasureHeaders(r: GP3Reader, count: number): MeasureHeader[] {
 	const headers: MeasureHeader[] = [];
 	let prevNumerator = 4;
 	let prevDenominator = 4;
 
 	for (let i = 0; i < count; i++) {
-		if (i > 0) {
-			r.skip(1); // blank byte before each header except first
-		}
-
 		const flags = r.readByte();
 
 		let numerator = prevNumerator;
@@ -390,7 +291,11 @@ function readMeasureHeaders(r: GP5Reader, count: number, _version: GP5Version): 
 		let repeatClose = -1;
 		if (flags & 0x08) {
 			repeatClose = r.readSignedByte();
-			if (repeatClose > 0) repeatClose -= 1;
+		}
+
+		let repeatAlternative = 0;
+		if (flags & 0x10) {
+			repeatAlternative = r.readByte();
 		}
 
 		let marker: MeasureHeader['marker'] = null;
@@ -412,23 +317,6 @@ function readMeasureHeaders(r: GP5Reader, count: number, _version: GP5Version): 
 
 		const hasDoubleBar = (flags & 0x80) !== 0;
 
-		let repeatAlternative = 0;
-		if (flags & 0x10) {
-			repeatAlternative = r.readByte();
-		}
-
-		// GP5: beam groups if time sig was set (both bits 0x01 and 0x02)
-		if (flags & 0x03) {
-			r.skip(4); // beam groups
-		}
-
-		// Blank byte if not alternate ending
-		if (!(flags & 0x10)) {
-			r.skip(1);
-		}
-
-		const tripletFeel = r.readByte();
-
 		headers.push({
 			numerator,
 			denominator,
@@ -438,8 +326,7 @@ function readMeasureHeaders(r: GP5Reader, count: number, _version: GP5Version): 
 			marker,
 			keySignature,
 			keyMode,
-			hasDoubleBar,
-			tripletFeel
+			hasDoubleBar
 		});
 
 		prevNumerator = numerator;
@@ -449,15 +336,10 @@ function readMeasureHeaders(r: GP5Reader, count: number, _version: GP5Version): 
 	return headers;
 }
 
-function readTrackHeaders(r: GP5Reader, count: number, version: GP5Version): TrackHeader[] {
+function readTrackHeaders(r: GP3Reader, count: number): TrackHeader[] {
 	const tracks: TrackHeader[] = [];
 
 	for (let i = 0; i < count; i++) {
-		// GP5.10: blank byte before first track; GP5.0: blank byte before every track
-		if (i === 0 || versionGreaterThan(version, 5, 0, 0) === false) {
-			r.skip(1);
-		}
-
 		const flags1 = r.readByte();
 		const isPercussion = (flags1 & 0x01) !== 0;
 
@@ -478,84 +360,29 @@ function readTrackHeaders(r: GP5Reader, count: number, version: GP5Version): Tra
 		r.skip(4); // color (3 bytes + padding)
 
 		tracks.push({ name, isPercussion, numStrings, tuning, port, channelIndex, effectChannel, fretCount, capoFret });
-
-		// GP5 track flags2 (display settings)
-		r.readShort();
-
-		// Auto accentuation + MIDI bank
-		r.readByte(); // auto accentuation
-		r.readByte(); // MIDI bank
-
-		// Track RSE
-		readTrackRSE(r, version);
-	}
-
-	// Trailing bytes after all tracks
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		r.skip(1);
-	} else {
-		r.skip(2);
 	}
 
 	return tracks;
-}
-
-function readTrackRSE(r: GP5Reader, version: GP5Version): void {
-	r.readByte(); // humanize
-	r.skip(12); // 3 ints unknown
-	r.skip(12); // additional unknown
-	readRSEInstrument(r, version);
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		readEqualizer(r, 4); // 3-band + gain
-		readRSEInstrumentEffect(r, version);
-	}
-}
-
-function readRSEInstrument(r: GP5Reader, version: GP5Version): void {
-	r.readInt(); // MIDI instrument number
-	r.readInt(); // unknown
-	r.readInt(); // sound bank
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		r.readInt(); // effect number
-	} else {
-		r.readShort(); // effect number (GP5.0)
-		r.skip(1);
-	}
-}
-
-function readRSEInstrumentEffect(r: GP5Reader, version: GP5Version): void {
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		r.readIntByteSizeString(); // effect name
-		r.readIntByteSizeString(); // effect category
-	}
 }
 
 // ---------------------------------------------------------------------------
 // Measure / Beat / Note reading — the per-measure data block
 // ---------------------------------------------------------------------------
 
+/** GP3: single voice per measure, no voice2, no linebreak byte. */
 function readMeasures(
-	r: GP5Reader,
+	r: GP3Reader,
 	measureCount: number,
-	trackCount: number,
-	version: GP5Version
-): GP5ParsedBeat[][][] {
-	// Result: measures[trackIdx][measureIdx] = beats[]
-	const allMeasures: GP5ParsedBeat[][][] = [];
+	trackCount: number
+): GP3ParsedBeat[][][] {
+	const allMeasures: GP3ParsedBeat[][][] = [];
 	for (let t = 0; t < trackCount; t++) {
 		allMeasures.push([]);
 	}
 
-	// GP5 stores measures in order: measure1/track1, measure1/track2, ..., measure2/track1, ...
-	// GP5 has 2 voices per measure
 	for (let m = 0; m < measureCount; m++) {
 		for (let t = 0; t < trackCount; t++) {
-			const voice1Beats = readVoice(r, version);
-			const voice2Beats = readVoice(r, version);
-			r.readByte(); // line break
-
-			// Use voice 1 as primary; include voice 2 beats if voice 1 is empty
-			const beats = voice1Beats.length > 0 ? voice1Beats : voice2Beats;
+			const beats = readVoice(r);
 			allMeasures[t].push(beats);
 		}
 	}
@@ -563,18 +390,18 @@ function readMeasures(
 	return allMeasures;
 }
 
-function readVoice(r: GP5Reader, version: GP5Version): GP5ParsedBeat[] {
+function readVoice(r: GP3Reader): GP3ParsedBeat[] {
 	const beatCount = r.readInt();
-	const beats: GP5ParsedBeat[] = [];
+	const beats: GP3ParsedBeat[] = [];
 
 	for (let b = 0; b < beatCount; b++) {
-		beats.push(readBeat(r, version));
+		beats.push(readBeat(r));
 	}
 
 	return beats;
 }
 
-function readBeat(r: GP5Reader, version: GP5Version): GP5ParsedBeat {
+function readBeat(r: GP3Reader): GP3ParsedBeat {
 	const flags = r.readByte();
 
 	let isRest = false;
@@ -598,7 +425,7 @@ function readBeat(r: GP5Reader, version: GP5Version): GP5ParsedBeat {
 
 	// Chord diagram
 	if (flags & 0x02) {
-		readChord(r, version);
+		readChord(r);
 	}
 
 	// Text
@@ -606,124 +433,94 @@ function readBeat(r: GP5Reader, version: GP5Version): GP5ParsedBeat {
 		r.readIntByteSizeString();
 	}
 
-	// Beat effects
+	// Beat effects (GP3: single flag byte)
 	if (flags & 0x08) {
-		readBeatEffects(r, version);
+		readBeatEffects(r);
 	}
 
 	// Mix table change
 	if (flags & 0x10) {
-		readMixTableChange(r, version);
+		readMixTableChange(r);
 	}
 
 	// Notes
 	const stringFlags = r.readByte();
-	const notes: GP5ParsedNote[] = [];
+	const notes: GP3ParsedNote[] = [];
 
 	for (let i = 6; i >= 0; i--) {
 		if (stringFlags & (1 << i)) {
-			notes.push(readNote(r, version));
+			notes.push(readNote(r));
 		}
-	}
-
-	// GP5 beat flags2
-	const flags2 = r.readShort();
-	if (flags2 & 0x0800) {
-		r.readByte(); // break secondary beams
 	}
 
 	return { duration, dotted, tuplet, isRest: isRest || isEmpty, isEmpty, notes };
 }
 
-function readChord(r: GP5Reader, _version: GP5Version): void {
-	const header = r.readByte();
-	if (header === 0) {
-		// Old GP3 chord format: name + firstFret + (6 ints if firstFret != 0)
-		r.readIntByteSizeString();
+function readChord(r: GP3Reader): void {
+	const newFormat = r.readBool();
+	if (!newFormat) {
+		// GP3 old chord format
+		r.readIntByteSizeString(); // name
 		const firstFret = r.readInt();
 		if (firstFret !== 0) {
 			for (let i = 0; i < 6; i++) r.readInt();
 		}
 	} else {
-		// GP4+ format chord — large fixed structure
-		r.skip(16); // sharp(1) + blank(3) + root(1) + type(1) + extension(1) + bassNote(4) + tonality(4) + add(1)
-		r.readByteSizeString(22);
-		r.readByte(); // fifth
-		r.readByte(); // ninth
-		r.readByte(); // eleventh
+		// GP4+ new format chord (can appear in GP3 files saved by later editors)
+		r.readBool(); // sharp
+		r.skip(3); // blank
+		r.readInt(); // root
+		r.readInt(); // type
+		r.readInt(); // extension
+		r.readInt(); // bass note
+		r.readInt(); // tonality
+		r.readBool(); // add
+		r.readByteSizeString(22); // name
+		r.readInt(); // fifth
+		r.readInt(); // ninth
+		r.readInt(); // eleventh
+		r.readInt(); // first fret
 		for (let i = 0; i < 6; i++) r.readInt(); // frets
-		r.readByte(); // barreCount
-		r.skip(5); // barre frets
-		r.skip(5); // barre start strings
-		r.skip(5); // barre end strings
-		r.skip(7); // omissions
+		r.readInt(); // barres count
+		r.readInt(); r.readInt(); // barre frets
+		r.readInt(); r.readInt(); // barre starts
+		r.readInt(); r.readInt(); // barre ends
+		for (let i = 0; i < 7; i++) r.readBool(); // omissions
 		r.skip(1); // blank
-		r.skip(7); // fingering
-		r.readBool(); // show diagrams fingering
 	}
 }
 
-function readBeatEffects(r: GP5Reader, _version: GP5Version): void {
-	// GP4+ uses 2 bytes of flags
+/** GP3 beat effects: single flag byte. */
+function readBeatEffects(r: GP3Reader): void {
 	const flags1 = r.readByte();
-	const flags2 = r.readByte();
 
 	if (flags1 & 0x20) {
-		const slapEffect = r.readSignedByte();
+		const slapEffect = r.readByte();
 		if (slapEffect === 0) {
-			// Tremolo bar
-			readBend(r);
+			// Tremolo bar — GP3 stores only the dip value as Int
+			r.readInt();
+		} else {
+			// Slap/tap/pop — read accompanying Int
+			r.readInt();
 		}
 	}
 
-	if (flags2 & 0x04) {
-		// Tremolo bar
-		readBend(r);
-	}
-
 	if (flags1 & 0x40) {
-		// Beat stroke
-		r.readByte(); // stroke down
-		r.readByte(); // stroke up
-	}
-
-	if (flags2 & 0x02) {
-		// Pick stroke
-		r.readSignedByte();
+		// Beat stroke: down + up
+		r.readByte();
+		r.readByte();
 	}
 }
 
-function readBend(r: GP5Reader): { type: number; value: number; points: { position: number; value: number; vibrato: boolean }[] } {
-	const type = r.readSignedByte();
-	const value = r.readInt();
-	const pointCount = r.readInt();
-	const points: { position: number; value: number; vibrato: boolean }[] = [];
-	for (let i = 0; i < pointCount; i++) {
-		const position = r.readInt();
-		const pointValue = r.readInt();
-		const vibrato = r.readBool();
-		points.push({ position, value: pointValue, vibrato });
-	}
-	return { type, value, points };
-}
-
-function readMixTableChange(r: GP5Reader, version: GP5Version): void {
+/** GP3 mix table change: simpler than GP5 (no RSE, no tempo name, no wah). */
+function readMixTableChange(r: GP3Reader): void {
 	r.readSignedByte(); // instrument
-
-	// RSE instrument (GP5)
-	readRSEInstrument(r, version);
-	if (!versionGreaterThan(version, 5, 0, 0)) {
-		r.skip(1); // GP5.0 extra byte
-	}
-
 	const volume = r.readSignedByte();
 	const balance = r.readSignedByte();
 	const chorus = r.readSignedByte();
 	const reverb = r.readSignedByte();
 	const phaser = r.readSignedByte();
 	const tremolo = r.readSignedByte();
-
-	r.readIntByteSizeString(); // tempo name
 	const tempo = r.readInt();
 
 	// Durations for changed values
@@ -733,28 +530,11 @@ function readMixTableChange(r: GP5Reader, version: GP5Version): void {
 	if (reverb >= 0) r.readSignedByte();
 	if (phaser >= 0) r.readSignedByte();
 	if (tremolo >= 0) r.readSignedByte();
-	if (tempo >= 0) {
-		r.readSignedByte(); // duration
-		if (versionGreaterThan(version, 5, 0, 0)) {
-			r.readBool(); // hide tempo
-		}
-	}
-
-	// Mix table change flags (GP4+)
-	r.readByte();
-
-	// Wah effect (GP5)
-	r.readSignedByte();
-
-	// RSE instrument effect (GP5.1+)
-	readRSEInstrumentEffect(r, version);
+	if (tempo >= 0) r.readSignedByte();
 }
 
-function readNote(r: GP5Reader, version: GP5Version): GP5ParsedNote {
+function readNote(r: GP3Reader): GP3ParsedNote {
 	const flags = r.readByte();
-
-	const heavyAccent = (flags & 0x02) !== 0;
-	const accent = (flags & 0x40) !== 0;
 
 	let isTied = false;
 	let isDead = false;
@@ -762,6 +542,12 @@ function readNote(r: GP5Reader, version: GP5Version): GP5ParsedNote {
 		const noteType = r.readByte();
 		isTied = noteType === 2;
 		isDead = noteType === 3;
+	}
+
+	// Time-independent duration (GP3: 2 signed bytes)
+	if (flags & 0x01) {
+		r.readSignedByte(); // duration
+		r.readSignedByte(); // tuplet
 	}
 
 	let velocity = 8; // default mf
@@ -780,37 +566,20 @@ function readNote(r: GP5Reader, version: GP5Version): GP5ParsedNote {
 		r.readSignedByte(); // right hand finger
 	}
 
-	if (flags & 0x01) {
-		r.readDouble(); // duration percent
-	}
-
-	// GP5: second flags byte
-	r.readByte();
+	// GP3: NO second flags byte
 
 	// Note effects
 	let hammerOn = false;
 	let letRing = false;
-	let slide: number | null = null;
-	let harmonic: string | null = null;
-	let palmMute = false;
-	let vibrato = false;
-	let bend: GP5ParsedNote['bend'] = null;
-	let staccato = false;
-	let trill: GP5ParsedNote['trill'] = null;
-	let tremoloPicking: number | null = null;
+	let slide = false;
+	let bend: GP3ParsedNote['bend'] = null;
 
 	if (flags & 0x08) {
-		const result = readNoteEffects(r, version);
+		const result = readNoteEffects(r);
 		hammerOn = result.hammerOn;
 		letRing = result.letRing;
 		slide = result.slide;
-		harmonic = result.harmonic;
-		palmMute = result.palmMute;
-		vibrato = result.vibrato;
 		bend = result.bend;
-		staccato = result.staccato;
-		trill = result.trill;
-		tremoloPicking = result.tremoloPicking;
 	}
 
 	return {
@@ -822,107 +591,60 @@ function readNote(r: GP5Reader, version: GP5Version): GP5ParsedNote {
 		hammerOn,
 		letRing,
 		slide,
-		harmonic,
-		palmMute,
-		vibrato,
-		bend,
-		staccato,
-		heavyAccent,
-		accent,
-		trill,
-		tremoloPicking
+		bend
 	};
 }
 
 interface NoteEffectsResult {
 	hammerOn: boolean;
 	letRing: boolean;
-	slide: number | null;
-	harmonic: string | null;
-	palmMute: boolean;
-	vibrato: boolean;
-	bend: GP5ParsedNote['bend'];
-	staccato: boolean;
-	trill: GP5ParsedNote['trill'];
-	tremoloPicking: number | null;
+	slide: boolean;
+	bend: GP3ParsedNote['bend'];
 }
 
-function readNoteEffects(r: GP5Reader, version: GP5Version): NoteEffectsResult {
-	// GP4+ uses 2 bytes of flags
-	const flags1 = r.readByte();
-	const flags2 = r.readByte();
+/** GP3 note effects: single flag byte. */
+function readNoteEffects(r: GP3Reader): NoteEffectsResult {
+	const flags = r.readByte();
 
-	let bend: GP5ParsedNote['bend'] = null;
-	let hammerOn = false;
-	let letRing = false;
-	let slide: number | null = null;
-	let harmonic: string | null = null;
-	let palmMute = false;
-	let vibrato = false;
-	let staccato = false;
-	let trill: GP5ParsedNote['trill'] = null;
-	let tremoloPicking: number | null = null;
+	let bend: GP3ParsedNote['bend'] = null;
+	const hammerOn = (flags & 0x02) !== 0;
+	const slide = (flags & 0x04) !== 0;
+	const letRing = (flags & 0x08) !== 0;
 
-	if (flags1 & 0x01) {
+	if (flags & 0x01) {
 		bend = readBend(r);
 	}
-	hammerOn = (flags1 & 0x02) !== 0;
-	letRing = (flags1 & 0x08) !== 0;
 
-	if (flags1 & 0x10) {
-		readGraceNote(r, version);
+	if (flags & 0x10) {
+		readGraceNote(r);
 	}
 
-	staccato = (flags2 & 0x01) !== 0;
-	palmMute = (flags2 & 0x02) !== 0;
-
-	if (flags2 & 0x04) {
-		tremoloPicking = r.readSignedByte();
-	}
-
-	if (flags2 & 0x08) {
-		// GP5 slides: byte with flags
-		slide = r.readByte();
-	}
-
-	if (flags2 & 0x10) {
-		const harmonicType = r.readSignedByte();
-		harmonic = HARMONIC_TYPE_MAP[harmonicType] ?? null;
-		if (harmonicType === 2) {
-			// Artificial harmonic extra data
-			r.readByte(); // note
-			r.readSignedByte(); // accidental
-			r.readByte(); // octave
-		} else if (harmonicType === 3) {
-			r.readByte(); // fret
-		}
-	}
-
-	if (flags2 & 0x20) {
-		const trillFret = r.readSignedByte();
-		const trillPeriod = r.readSignedByte();
-		trill = { fret: trillFret, period: trillPeriod };
-	}
-
-	vibrato = (flags2 & 0x40) !== 0;
-
-	return { hammerOn, letRing, slide, harmonic, palmMute, vibrato, bend, staccato, trill, tremoloPicking };
+	return { hammerOn, letRing, slide, bend };
 }
 
-function readGraceNote(r: GP5Reader, version: GP5Version): void {
+function readBend(r: GP3Reader): { type: number; value: number; points: { position: number; value: number; vibrato: boolean }[] } {
+	const type = r.readSignedByte();
+	const value = r.readInt();
+	const pointCount = r.readInt();
+	const points: { position: number; value: number; vibrato: boolean }[] = [];
+	for (let i = 0; i < pointCount; i++) {
+		const position = r.readInt();
+		const pointValue = r.readInt();
+		const vibrato = r.readBool();
+		points.push({ position, value: pointValue, vibrato });
+	}
+	return { type, value, points };
+}
+
+function readGraceNote(r: GP3Reader): void {
 	r.readByte(); // fret
 	r.readByte(); // velocity
 	r.readByte(); // transition
 	r.readByte(); // duration
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		r.readByte(); // flags (dead, on beat)
-	} else {
-		r.readByte();
-	}
 }
 
 // ---------------------------------------------------------------------------
-// Transform parsed GP5 data → TabSong
+// Transform parsed GP3 data → TabSong
 // ---------------------------------------------------------------------------
 
 function transformToTabSong(
@@ -930,7 +652,7 @@ function transformToTabSong(
 	tempo: number,
 	measureHeaders: MeasureHeader[],
 	trackHeaders: TrackHeader[],
-	parsedMeasures: GP5ParsedBeat[][][],
+	parsedMeasures: GP3ParsedBeat[][][],
 	channels: MidiChannel[]
 ): TabSong {
 	const tracks: TabTrack[] = trackHeaders.map((th, trackIdx) => {
@@ -954,8 +676,6 @@ function transformToTabSong(
 				const stringCount = th.numStrings;
 				const tabNotes: TabNote[] = [];
 
-				// Notes in a GP5 beat are ordered from highest string to lowest
-				// The string index is determined by the bit position in the string flags
 				let noteStringIndex = 0;
 				for (const noteData of beatData.notes) {
 					const stringIdx = stringCount - 1 - noteStringIndex;
@@ -978,9 +698,9 @@ function transformToTabSong(
 						fret,
 						pitchClass: pc,
 						noteName: note.name,
-						slide: noteData.slide,
-						harmonic: noteData.harmonic,
-						palmMute: noteData.palmMute,
+						slide: noteData.slide ? 1 : null,
+						harmonic: null,
+						palmMute: false,
 						muted: noteData.isDead,
 						letRing: noteData.letRing,
 						bend: bendResult,
@@ -988,11 +708,11 @@ function transformToTabSong(
 							origin: false,
 							destination: noteData.isTied
 						},
-						vibrato: noteData.vibrato ? 'slight' : null,
+						vibrato: null,
 						hammerOn: noteData.hammerOn,
-						pullOff: false, // GP5 uses hammerOn for both — context determines direction
+						pullOff: false,
 						tapped: false,
-						accent: noteData.accent ? 1 : noteData.heavyAccent ? 2 : null
+						accent: null
 					});
 
 					noteStringIndex++;
@@ -1057,67 +777,47 @@ function transformToTabSong(
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Parses a Guitar Pro 5 (.gp5) file from raw bytes into a TabSong. */
-export function parseGp5File(data: Uint8Array): TabSong {
+/** Parses a Guitar Pro 3 (.gp3) file from raw bytes into a TabSong. */
+export function parseGp3File(data: Uint8Array): TabSong {
 	const buf = new ArrayBuffer(data.byteLength);
 	new Uint8Array(buf).set(data);
-	const r = new GP5Reader(buf);
+	const r = new GP3Reader(buf);
 
-	// Version string: ByteSizeString of size 30 (1 byte len + 30 chars)
+	// Version string: ByteSizeString of size 30
 	const versionStr = r.readByteSizeString(30);
-	const version = parseVersionString(versionStr);
 
-	// Validate it's a GP5 file
-	if (version.major !== 5) {
-		throw new Error(`Unsupported Guitar Pro version: ${versionStr} (expected GP5)`);
+	// Validate it's a GP3 file
+	if (!versionStr.includes('GUITAR PRO') || !versionStr.includes('v3')) {
+		throw new Error(`Unsupported Guitar Pro version: ${versionStr} (expected GP3)`);
 	}
 
-	// Score information
+	// Score information (GP3: 8 fields, no separate "music")
 	const info = readInfo(r);
 
-	// Lyrics
-	readLyrics(r);
-
-	// RSE master effect
-	readRSEMasterEffect(r, version);
-
-	// Page setup
-	readPageSetup(r);
+	// Triplet feel (GP3: global bool, not per-measure)
+	r.readBool();
 
 	// Tempo
-	r.readIntByteSizeString(); // tempo name
 	const tempo = r.readInt();
 
-	// Hide tempo (GP5.1+)
-	if (versionGreaterThan(version, 5, 0, 0)) {
-		r.readBool();
-	}
-
-	// Key signature + octave
-	r.readSignedByte(); // key
-	r.readInt(); // octave
+	// Key signature
+	r.readInt();
 
 	// MIDI channels
 	const channels = readMidiChannels(r);
-
-	// Directions (GP5)
-	readDirections(r);
-
-	// Master reverb
-	r.readInt();
 
 	// Measure count + track count
 	const measureCount = r.readInt();
 	const trackCount = r.readInt();
 
 	// Measure headers
-	const measureHeaders = readMeasureHeaders(r, measureCount, version);
+	const measureHeaders = readMeasureHeaders(r, measureCount);
 
 	// Tracks
-	const trackHeaders = readTrackHeaders(r, trackCount, version);
+	const trackHeaders = readTrackHeaders(r, trackCount);
 
 	// Measures (the actual beat/note data)
-	const parsedMeasures = readMeasures(r, measureCount, trackCount, version);
+	const parsedMeasures = readMeasures(r, measureCount, trackCount);
 
 	return transformToTabSong(info, tempo, measureHeaders, trackHeaders, parsedMeasures, channels);
 }

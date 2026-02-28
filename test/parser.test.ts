@@ -5,13 +5,16 @@ import {
 	parseTabFile,
 	parseGpxFile,
 	parseGp5File,
+	parseGp3File,
 	detectFormat,
 	durationToBeats,
 	beatDurationMs,
+	musicalBeatPosition,
+	barMusicalBeatCount,
 	noteFromPitchClass,
 	midiToPitchClass,
 } from '../src/index.js';
-import type { TabSong, TabBeat } from '../src/index.js';
+import type { TabSong, TabBeat, TabBar } from '../src/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixture loading
@@ -27,6 +30,7 @@ const gpxData = loadFixture('Crosty.gpx');
 const gpxData2 = loadFixture('Abandoned.gpx');
 const gpData = loadFixture('BeyondHeavensGate.gp');
 const gp5Data = loadFixture('Unprocessed.gp5');
+const gp3Data = loadFixture('fleetwood_mac-landslide.gp3');
 
 // ---------------------------------------------------------------------------
 // Format Detection
@@ -46,6 +50,10 @@ describe('detectFormat', () => {
 		expect(detectFormat(gp5Data)).toBe('gp5');
 	});
 
+	it('detects GP3 version string as gp3', () => {
+		expect(detectFormat(gp3Data)).toBe('gp3');
+	});
+
 	it('throws on tiny files', () => {
 		expect(() => detectFormat(new Uint8Array([0, 1]))).toThrow('File too small');
 	});
@@ -54,6 +62,7 @@ describe('detectFormat', () => {
 		const unknownHeader = new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 		expect(detectFormat(unknownHeader, 'song.gpx')).toBe('gpx');
 		expect(detectFormat(unknownHeader, 'song.gp5')).toBe('gp5');
+		expect(detectFormat(unknownHeader, 'song.gp3')).toBe('gp3');
 		expect(detectFormat(unknownHeader, 'song.gp')).toBe('gp7');
 	});
 
@@ -159,15 +168,84 @@ describe('parseGp5File', () => {
 		expect(note.pitchClass).toBeLessThanOrEqual(11);
 	});
 
-	it('extracts tuning as Note[]', () => {
+	it('extracts tuning as Note[] with tuningMidi', () => {
 		const song = parseGp5File(gp5Data);
 		const track = song.tracks[0];
 		expect(track.tuning.length).toBeGreaterThan(0);
+		expect(track.tuningMidi.length).toBe(track.tuning.length);
 		for (const note of track.tuning) {
 			expect(note.pitchClass).toBeGreaterThanOrEqual(0);
 			expect(note.pitchClass).toBeLessThanOrEqual(11);
 			expect(note.name).toBeDefined();
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// GP3 Parser (.gp3 — Guitar Pro 3)
+// ---------------------------------------------------------------------------
+
+describe('parseGp3File', () => {
+	it('parses fleetwood_mac-landslide.gp3 into a valid TabSong', () => {
+		const song = parseGp3File(gp3Data);
+		expect(song).toBeDefined();
+		expect(song.tracks.length).toBeGreaterThan(0);
+	});
+
+	it('extracts metadata', () => {
+		const song = parseGp3File(gp3Data);
+		expect(song.tempo).toBeGreaterThan(0);
+	});
+
+	it('extracts correct track count', () => {
+		const song = parseGp3File(gp3Data);
+		expect(song.tracks.length).toBe(3);
+	});
+
+	it('extracts measures with beats', () => {
+		const song = parseGp3File(gp3Data);
+		const track = song.tracks[0];
+		expect(track.bars.length).toBe(55);
+
+		const firstBar = track.bars[0];
+		expect(firstBar.timeSignature).toBeDefined();
+		expect(firstBar.beats.length).toBeGreaterThan(0);
+	});
+
+	it('extracts notes with fret and string info', () => {
+		const song = parseGp3File(gp3Data);
+		const track = song.tracks[0];
+
+		const barWithNotes = track.bars.find(
+			(b) => b.beats.some((beat) => beat.notes.length > 0)
+		);
+		expect(barWithNotes).toBeDefined();
+
+		const beatWithNotes = barWithNotes!.beats.find((b) => b.notes.length > 0);
+		expect(beatWithNotes).toBeDefined();
+
+		const note = beatWithNotes!.notes[0];
+		expect(note.fret).toBeGreaterThanOrEqual(0);
+		expect(note.string).toBeGreaterThanOrEqual(0);
+		expect(note.noteName).toBeDefined();
+		expect(note.pitchClass).toBeGreaterThanOrEqual(0);
+		expect(note.pitchClass).toBeLessThanOrEqual(11);
+	});
+
+	it('extracts tuning as Note[] with tuningMidi', () => {
+		const song = parseGp3File(gp3Data);
+		const track = song.tracks[0];
+		expect(track.tuning.length).toBeGreaterThan(0);
+		expect(track.tuningMidi.length).toBe(track.tuning.length);
+		for (const note of track.tuning) {
+			expect(note.pitchClass).toBeGreaterThanOrEqual(0);
+			expect(note.pitchClass).toBeLessThanOrEqual(11);
+			expect(note.name).toBeDefined();
+		}
+	});
+
+	it('throws on non-GP3 data', () => {
+		expect(() => parseGp3File(gpxData)).toThrow();
 	});
 });
 
@@ -219,6 +297,12 @@ describe('parseTabFile (auto-detection)', () => {
 	it('auto-detects and parses .gp', () => {
 		const song = parseTabFile(gpData);
 		expect(song.title).toContain('Beyond Heavens Gate');
+	});
+
+	it('auto-detects and parses .gp3', () => {
+		const song = parseTabFile(gp3Data);
+		expect(song).toBeDefined();
+		expect(song.tracks.length).toBe(3);
 	});
 });
 
@@ -284,6 +368,50 @@ describe('beatDurationMs', () => {
 			tempo: 60
 		};
 		expect(beatDurationMs(beat)).toBe(500);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Musical Beat Position Helpers
+// ---------------------------------------------------------------------------
+
+describe('musicalBeatPosition', () => {
+	it('returns 1 for the first beat in a 4/4 bar', () => {
+		const bar: TabBar = {
+			index: 0,
+			timeSignature: { numerator: 4, denominator: 4 },
+			keySignature: null,
+			section: null,
+			beats: [
+				{ index: 0, barIndex: 0, notes: [], duration: 'quarter', tuplet: null, dotted: 0, isRest: true, dynamic: null, tempo: 120 },
+				{ index: 1, barIndex: 0, notes: [], duration: 'quarter', tuplet: null, dotted: 0, isRest: true, dynamic: null, tempo: 120 },
+				{ index: 2, barIndex: 0, notes: [], duration: 'quarter', tuplet: null, dotted: 0, isRest: true, dynamic: null, tempo: 120 },
+				{ index: 3, barIndex: 0, notes: [], duration: 'quarter', tuplet: null, dotted: 0, isRest: true, dynamic: null, tempo: 120 }
+			],
+			repeatStart: false,
+			repeatEnd: false,
+			repeatCount: 0
+		};
+		expect(musicalBeatPosition(bar, 0)).toBe(1);
+		expect(musicalBeatPosition(bar, 1)).toBe(2);
+		expect(musicalBeatPosition(bar, 2)).toBe(3);
+		expect(musicalBeatPosition(bar, 3)).toBe(4);
+	});
+});
+
+describe('barMusicalBeatCount', () => {
+	it('returns the numerator of the time signature', () => {
+		const bar: TabBar = {
+			index: 0,
+			timeSignature: { numerator: 6, denominator: 8 },
+			keySignature: null,
+			section: null,
+			beats: [],
+			repeatStart: false,
+			repeatEnd: false,
+			repeatCount: 0
+		};
+		expect(barMusicalBeatCount(bar)).toBe(6);
 	});
 });
 

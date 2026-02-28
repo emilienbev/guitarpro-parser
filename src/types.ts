@@ -76,6 +76,8 @@ export interface TabTrack {
 	shortName: string;
 	instrument: string | null;
 	tuning: Note[];
+	/** Raw MIDI pitch numbers per string (index 0 = lowest string). Used for audio synthesis. */
+	tuningMidi: number[];
 	capoFret: number;
 	bars: TabBar[];
 }
