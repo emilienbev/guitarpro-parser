@@ -537,10 +537,11 @@ function readRSEInstrumentEffect(r: GP5Reader, version: GP5Version): void {
 function readMeasures(
 	r: GP5Reader,
 	measureCount: number,
-	trackCount: number,
+	trackHeaders: TrackHeader[],
 	version: GP5Version
 ): GP5ParsedBeat[][][] {
 	// Result: measures[trackIdx][measureIdx] = beats[]
+	const trackCount = trackHeaders.length;
 	const allMeasures: GP5ParsedBeat[][][] = [];
 	for (let t = 0; t < trackCount; t++) {
 		allMeasures.push([]);
@@ -550,8 +551,9 @@ function readMeasures(
 	// GP5 has 2 voices per measure
 	for (let m = 0; m < measureCount; m++) {
 		for (let t = 0; t < trackCount; t++) {
-			const voice1Beats = readVoice(r, version);
-			const voice2Beats = readVoice(r, version);
+			const numStrings = trackHeaders[t].numStrings;
+			const voice1Beats = readVoice(r, version, numStrings);
+			const voice2Beats = readVoice(r, version, numStrings);
 			r.readByte(); // line break
 
 			// Use voice 1 as primary; include voice 2 beats if voice 1 is empty
@@ -563,18 +565,18 @@ function readMeasures(
 	return allMeasures;
 }
 
-function readVoice(r: GP5Reader, version: GP5Version): GP5ParsedBeat[] {
+function readVoice(r: GP5Reader, version: GP5Version, numStrings: number): GP5ParsedBeat[] {
 	const beatCount = r.readInt();
 	const beats: GP5ParsedBeat[] = [];
 
 	for (let b = 0; b < beatCount; b++) {
-		beats.push(readBeat(r, version));
+		beats.push(readBeat(r, version, numStrings));
 	}
 
 	return beats;
 }
 
-function readBeat(r: GP5Reader, version: GP5Version): GP5ParsedBeat {
+function readBeat(r: GP5Reader, version: GP5Version, numStrings: number): GP5ParsedBeat {
 	const flags = r.readByte();
 
 	let isRest = false;
@@ -616,13 +618,17 @@ function readBeat(r: GP5Reader, version: GP5Version): GP5ParsedBeat {
 		readMixTableChange(r, version);
 	}
 
-	// Notes
+	// Notes — bit 6 = GP string 1 (highest pitch), bit 0 = GP string 7
 	const stringFlags = r.readByte();
 	const notes: GP5ParsedNote[] = [];
 
 	for (let i = 6; i >= 0; i--) {
 		if (stringFlags & (1 << i)) {
-			notes.push(readNote(r, version));
+			const gpString = 7 - i; // 1-based, 1 = highest pitch string
+			const tuningIndex = gpString - 1; // 0-based into tuning array (0 = highest pitch string)
+			const note = readNote(r, version);
+			note.string = tuningIndex;
+			notes.push(note);
 		}
 	}
 
@@ -936,8 +942,7 @@ function transformToTabSong(
 	const tracks: TabTrack[] = trackHeaders.map((th, trackIdx) => {
 		const tuningPitches = th.tuning;
 		const tuning: Note[] = tuningPitches
-			.map((midi) => noteFromPitchClass(midiToPitchClass(midi)))
-			.reverse();
+			.map((midi) => noteFromPitchClass(midiToPitchClass(midi)));
 
 		let globalBeatIndex = 0;
 		const bars: TabBar[] = [];
@@ -954,14 +959,12 @@ function transformToTabSong(
 				const stringCount = th.numStrings;
 				const tabNotes: TabNote[] = [];
 
-				// Notes in a GP5 beat are ordered from highest string to lowest
-				// The string index is determined by the bit position in the string flags
-				let noteStringIndex = 0;
 				for (const noteData of beatData.notes) {
-					const stringIdx = stringCount - 1 - noteStringIndex;
+					const tuningIndex = noteData.string; // 0-based, 0 = highest pitch string (matches GP tuning array order)
+					const stringIdx = tuningIndex; // display order: 0 = highest pitch string
 					const fret = noteData.fret;
-					const openPitch = tuningPitches[noteStringIndex] ?? 0;
-					const pc = (((openPitch + fret) % 12 + 12) % 12) as PitchClass;
+					const openPitch = tuningPitches[tuningIndex] ?? 0;
+					const pc = (((openPitch + th.capoFret + fret) % 12 + 12) % 12) as PitchClass;
 					const note = noteFromPitchClass(pc, false);
 
 					let bendResult: TabNote['bend'] = null;
@@ -994,8 +997,6 @@ function transformToTabSong(
 						tapped: false,
 						accent: noteData.accent ? 1 : noteData.heavyAccent ? 2 : null
 					});
-
-					noteStringIndex++;
 				}
 
 				tabBeats.push({
@@ -1038,7 +1039,7 @@ function transformToTabSong(
 			shortName: th.name.substring(0, 4),
 			instrument: instrumentName,
 			tuning,
-			tuningMidi: [...tuningPitches].reverse(),
+			tuningMidi: [...tuningPitches],
 			capoFret: th.capoFret,
 			bars
 		};
@@ -1117,7 +1118,7 @@ export function parseGp5File(data: Uint8Array): TabSong {
 	const trackHeaders = readTrackHeaders(r, trackCount, version);
 
 	// Measures (the actual beat/note data)
-	const parsedMeasures = readMeasures(r, measureCount, trackCount, version);
+	const parsedMeasures = readMeasures(r, measureCount, trackHeaders, version);
 
 	return transformToTabSong(info, tempo, measureHeaders, trackHeaders, parsedMeasures, channels);
 }

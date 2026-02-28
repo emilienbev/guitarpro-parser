@@ -398,10 +398,10 @@ function parseTimeSignature(time: string | null): { numerator: number; denominat
 	};
 }
 
-/** Computes pitch class from string tuning + fret. */
-function pitchClassFromStringFret(tuningPitches: number[], stringIndex: number, fret: number): PitchClass {
+/** Computes pitch class from string tuning + capo + fret. Frets are capo-relative. */
+function pitchClassFromStringFret(tuningPitches: number[], stringIndex: number, fret: number, capoFret: number = 0): PitchClass {
 	const openPitch = tuningPitches[stringIndex] ?? 0;
-	return (((openPitch + fret) % 12 + 12) % 12) as PitchClass;
+	return (((openPitch + capoFret + fret) % 12 + 12) % 12) as PitchClass;
 }
 
 /** Parses tuning pitches string (e.g. "40 45 50 55 59 64") into MIDI note numbers. */
@@ -474,13 +474,13 @@ function propHType(propertiesEl: Element | null, name: string): string | null {
 // ---------------------------------------------------------------------------
 
 /** Transforms a <Note> XML element into a TabNote. */
-function transformNoteElement(noteEl: Element, tuningPitches: number[]): TabNote {
+function transformNoteElement(noteEl: Element, tuningPitches: number[], capoFret: number = 0): TabNote {
 	const propsEl = noteEl.querySelector(':scope > Properties');
 
 	const stringIndex = parseInt(propValue(propsEl, 'String') ?? '0', 10);
 	const fret = parseInt(propValue(propsEl, 'Fret') ?? '0', 10);
 
-	const pc = pitchClassFromStringFret(tuningPitches, stringIndex, fret);
+	const pc = pitchClassFromStringFret(tuningPitches, stringIndex, fret, capoFret);
 	const note = noteFromPitchClass(pc, false);
 
 	const isBended = propEnabled(propsEl, 'Bended');
@@ -694,10 +694,10 @@ function transformTrackElement(
 		}
 	}
 
-	// Convert MIDI pitches to Note[] (reversed: GPX stores high-to-low, we want low-to-high)
+	// Convert MIDI pitches to Note[] — kept in GPX native low→high order during parsing;
+	// reversed to high→low (index 0 = highest pitch) before returning, to match GP3/GP5 convention.
 	const tuning: Note[] = tuningPitches
-		.map((midi) => noteFromPitchClass(midiToPitchClass(midi)))
-		.reverse();
+		.map((midi) => noteFromPitchClass(midiToPitchClass(midi)));
 
 	// Determine track index for bar resolution
 	const trackIndex = parseInt(trackId, 10);
@@ -773,12 +773,10 @@ function transformTrackElement(
 					// Resolve notes
 					const notesText = childText(beatEl, 'Notes');
 					const noteIds = splitIds(notesText);
-					const stringCount = tuningPitches.length;
 					const tabNotes: TabNote[] = noteIds
 						.map((nid) => noteMap.get(nid))
 						.filter((n): n is Element => n !== undefined)
-						.map((n) => transformNoteElement(n, tuningPitches))
-						.map((n) => ({ ...n, string: stringCount - 1 - n.string }));
+						.map((n) => transformNoteElement(n, tuningPitches, capoFret));
 
 					// Extract duration from rhythm
 					const noteValueText = rhythmEl
@@ -853,13 +851,26 @@ function transformTrackElement(
 		}
 	}
 
+	// Normalize to high→low convention (index 0 = highest pitch string) matching GP3/GP5 and types.ts.
+	// GPX XML stores tuning low→high and note.string 0 = lowest pitch; flip both.
+	const stringCount = tuningPitches.length;
+	const reversedTuning = [...tuning].reverse();
+	const reversedTuningMidi = [...tuningPitches].reverse();
+	for (const bar of bars) {
+		for (const beat of bar.beats) {
+			for (const note of beat.notes) {
+				note.string = stringCount - 1 - note.string;
+			}
+		}
+	}
+
 	return {
 		id: trackId,
 		name: childText(trackEl, 'Name') ?? 'Track',
 		shortName: childText(trackEl, 'ShortName') ?? '',
 		instrument: trackEl.querySelector(':scope > Instrument')?.getAttribute('ref') ?? null,
-		tuning,
-		tuningMidi: [...tuningPitches].reverse(),
+		tuning: reversedTuning,
+		tuningMidi: reversedTuningMidi,
 		capoFret,
 		bars
 	};

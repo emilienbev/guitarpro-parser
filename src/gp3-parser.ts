@@ -373,8 +373,9 @@ function readTrackHeaders(r: GP3Reader, count: number): TrackHeader[] {
 function readMeasures(
 	r: GP3Reader,
 	measureCount: number,
-	trackCount: number
+	trackHeaders: TrackHeader[]
 ): GP3ParsedBeat[][][] {
+	const trackCount = trackHeaders.length;
 	const allMeasures: GP3ParsedBeat[][][] = [];
 	for (let t = 0; t < trackCount; t++) {
 		allMeasures.push([]);
@@ -382,7 +383,7 @@ function readMeasures(
 
 	for (let m = 0; m < measureCount; m++) {
 		for (let t = 0; t < trackCount; t++) {
-			const beats = readVoice(r);
+			const beats = readVoice(r, trackHeaders[t].numStrings);
 			allMeasures[t].push(beats);
 		}
 	}
@@ -390,18 +391,18 @@ function readMeasures(
 	return allMeasures;
 }
 
-function readVoice(r: GP3Reader): GP3ParsedBeat[] {
+function readVoice(r: GP3Reader, numStrings: number): GP3ParsedBeat[] {
 	const beatCount = r.readInt();
 	const beats: GP3ParsedBeat[] = [];
 
 	for (let b = 0; b < beatCount; b++) {
-		beats.push(readBeat(r));
+		beats.push(readBeat(r, numStrings));
 	}
 
 	return beats;
 }
 
-function readBeat(r: GP3Reader): GP3ParsedBeat {
+function readBeat(r: GP3Reader, numStrings: number): GP3ParsedBeat {
 	const flags = r.readByte();
 
 	let isRest = false;
@@ -443,13 +444,17 @@ function readBeat(r: GP3Reader): GP3ParsedBeat {
 		readMixTableChange(r);
 	}
 
-	// Notes
+	// Notes — bit 6 = GP string 1 (highest pitch), bit 0 = GP string 7
 	const stringFlags = r.readByte();
 	const notes: GP3ParsedNote[] = [];
 
 	for (let i = 6; i >= 0; i--) {
 		if (stringFlags & (1 << i)) {
-			notes.push(readNote(r));
+			const gpString = 7 - i; // 1-based, 1 = highest pitch string
+			const tuningIndex = gpString - 1; // 0-based into tuning array (0 = highest pitch string)
+			const note = readNote(r);
+			note.string = tuningIndex;
+			notes.push(note);
 		}
 	}
 
@@ -658,8 +663,7 @@ function transformToTabSong(
 	const tracks: TabTrack[] = trackHeaders.map((th, trackIdx) => {
 		const tuningPitches = th.tuning;
 		const tuning: Note[] = tuningPitches
-			.map((midi) => noteFromPitchClass(midiToPitchClass(midi)))
-			.reverse();
+			.map((midi) => noteFromPitchClass(midiToPitchClass(midi)));
 
 		let globalBeatIndex = 0;
 		const bars: TabBar[] = [];
@@ -676,12 +680,12 @@ function transformToTabSong(
 				const stringCount = th.numStrings;
 				const tabNotes: TabNote[] = [];
 
-				let noteStringIndex = 0;
 				for (const noteData of beatData.notes) {
-					const stringIdx = stringCount - 1 - noteStringIndex;
+					const tuningIndex = noteData.string; // 0-based, 0 = highest pitch string (matches GP tuning array order)
+					const stringIdx = tuningIndex; // display order: 0 = highest pitch string
 					const fret = noteData.fret;
-					const openPitch = tuningPitches[noteStringIndex] ?? 0;
-					const pc = (((openPitch + fret) % 12 + 12) % 12) as PitchClass;
+					const openPitch = tuningPitches[tuningIndex] ?? 0;
+					const pc = (((openPitch + th.capoFret + fret) % 12 + 12) % 12) as PitchClass;
 					const note = noteFromPitchClass(pc, false);
 
 					let bendResult: TabNote['bend'] = null;
@@ -714,8 +718,6 @@ function transformToTabSong(
 						tapped: false,
 						accent: null
 					});
-
-					noteStringIndex++;
 				}
 
 				tabBeats.push({
@@ -758,7 +760,7 @@ function transformToTabSong(
 			shortName: th.name.substring(0, 4),
 			instrument: instrumentName,
 			tuning,
-			tuningMidi: [...tuningPitches].reverse(),
+			tuningMidi: [...tuningPitches],
 			capoFret: th.capoFret,
 			bars
 		};
@@ -817,7 +819,7 @@ export function parseGp3File(data: Uint8Array): TabSong {
 	const trackHeaders = readTrackHeaders(r, trackCount);
 
 	// Measures (the actual beat/note data)
-	const parsedMeasures = readMeasures(r, measureCount, trackCount);
+	const parsedMeasures = readMeasures(r, measureCount, trackHeaders);
 
 	return transformToTabSong(info, tempo, measureHeaders, trackHeaders, parsedMeasures, channels);
 }
