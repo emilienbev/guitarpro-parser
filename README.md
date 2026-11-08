@@ -1,6 +1,27 @@
+<div align="center">
+
 # guitarpro-parser
 
-Parse Guitar Pro files (`.gp`, `.gpx`, `.gp5`, `.gp3`) in JavaScript. Works in Node.js and browsers. No native dependencies.
+TypeScript parser for Guitar Pro files. Returns a typed model of the score and computes playback order and timing.
+
+[![guitarpro-parser](https://img.shields.io/badge/guitarpro--parser-CB3837?style=flat&logo=npm&logoColor=white)](https://www.npmjs.com/package/guitarpro-parser)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-4C1?style=flat&logo=apache&logoColor=white)](./LICENSE)
+[![GuitarWeaver](https://img.shields.io/badge/GuitarWeaver-FF8C42?style=flat&logo=google-chrome&logoColor=white)](https://guitarweaver.com)
+
+</div>
+
+## Overview
+
+- Reads `.gp` (Guitar Pro 7 and 8), `.gpx` (Guitar Pro 6), `.gp5`, `.gp4` and `.gp3`.
+- Detects the format from the file's bytes. The file name is not used.
+- Produces the same model for every format.
+- Computes the played order of bars, including repeats, alternate endings, D.C., D.S., Coda and Fine.
+- Computes note times in milliseconds, including tempo changes, grace notes, triplet feel and ties.
+- Runs in Node and the browser. Ships ESM, CommonJS and type declarations.
+- Depends on [fflate](https://github.com/101arrowz/fflate) only.
+
+Used by [GuitarWeaver](https://guitarweaver.com).
 
 ## Installation
 
@@ -8,206 +29,170 @@ Parse Guitar Pro files (`.gp`, `.gpx`, `.gp5`, `.gp3`) in JavaScript. Works in N
 npm install guitarpro-parser
 ```
 
-## Quick Start
+## Usage
 
 ### Parse a file
 
 ```ts
-import { parseTabFile } from 'guitarpro-parser';
-import { readFileSync } from 'fs';
+import { parseGuitarPro } from 'guitarpro-parser';
 
-const data = new Uint8Array(readFileSync('song.gp'));
-const song = parseTabFile(data);
+const song = parseGuitarPro(readFileSync('song.gp'));     // Node
+const song = parseGuitarPro(await file.arrayBuffer());    // browser
 ```
 
-### Get song metadata
+`parseGuitarPro` accepts a `Uint8Array`, a Node `Buffer` or an `ArrayBuffer`.
+
+### Get note times
+
+`scheduleTrack` returns the struck notes of one track in played order, with start and end times in milliseconds.
 
 ```ts
-console.log(song.title);   // "Beyond Heavens Gate"
-console.log(song.artist);  // "Unprocessed"
-console.log(song.album);   // "Angel"
-console.log(song.tempo);   // 140
-```
+import { buildTimeline, scheduleTrack } from 'guitarpro-parser';
 
-### Get tracks and tunings
-
-```ts
-for (const track of song.tracks) {
-  console.log(track.name);  // "Guitar 1"
-  
-  // Tuning as Note[] (low to high)
-  const tuningNames = track.tuning.map(note => note.name);
-  console.log(tuningNames);  // ["E", "A", "D", "G", "B", "E"]
-  
-  // Raw MIDI pitch numbers per string (useful for audio synthesis)
-  console.log(track.tuningMidi);  // [40, 45, 50, 55, 59, 64]
-  
-  console.log(track.capoFret);  // 0
-  console.log(track.bars.length);  // 92
+const timeline = buildTimeline(song);
+for (const { note, startMs, endMs } of scheduleTrack(song, song.tracks[0], timeline)) {
+  synth.play(note.midi, startMs, endMs);
 }
 ```
 
-### Get notes from a bar
+Times are at speed 1. Divide by the playback speed to play faster or slower.
+
+### Follow playback
 
 ```ts
-const track = song.tracks[0];
-const bar = track.bars[0];
+const position = timeline.positionAt(ms);   // null before the start and after the end
+if (position) {
+  const masterBar = timeline.bars[position.playedBar].masterBar;
+  const bpm = timeline.bpmAt(position.playedBar, position.tick);
+}
+```
 
-// Time signature
-console.log(bar.timeSignature);  // { numerator: 4, denominator: 4 }
+### Loop a section
 
-// Iterate through beats
-for (const beat of bar.beats) {
-  if (beat.isRest) continue;
-  
-  console.log(beat.duration);  // "quarter", "eighth", "16th", etc.
-  
-  // Get all notes in this beat
-  for (const note of beat.notes) {
-    console.log(`String ${note.string}, Fret ${note.fret}`);  // "String 2, Fret 5"
-    console.log(note.noteName);  // "A"
-    
-    // Techniques
-    if (note.bend) console.log('Bend:', note.bend.destination);
-    if (note.slide) console.log('Slide');
-    if (note.hammerOn) console.log('Hammer-on');
-    if (note.palmMute) console.log('Palm mute');
+```ts
+import { buildTimeline, playbackOrder, scheduleTrack } from 'guitarpro-parser';
+
+const loop = buildTimeline(song, playbackOrder(song).slice(16, 24));
+const notes = scheduleTrack(song, song.tracks[0], loop);
+```
+
+### Read the score
+
+```ts
+for (const track of song.tracks) {
+  if (track.kind !== 'stringed') continue;
+
+  track.bars.forEach((bar, i) => {
+    const masterBar = song.masterBars[i];
+    for (const voice of bar.voices) {
+      for (const beat of voice.beats) {
+        for (const note of beat.notes) {
+          note.string;   // 0-based, 0 is the highest string
+          note.fret;
+          note.midi;
+        }
+      }
+    }
+  });
+}
+```
+
+## Model
+
+```text
+Song
+├─ info           title, artist, album, ...
+├─ masterBars[]   per bar, shared by all tracks: time signature, key, repeats,
+│                 alternate endings, section, jumps, triplet feel
+├─ tempoChanges[]
+└─ tracks[]       StringedTrack | PercussionTrack | PitchedTrack
+   └─ bars[]      bars[i] belongs to masterBars[i]
+      └─ voices[] voices[v] is Guitar Pro voice v + 1
+         └─ beats[]
+            └─ notes[]   FrettedNote | PercussionNote | PitchedNote
+```
+
+### Conventions
+
+| Topic | Convention |
+|-------|------------|
+| Indexes | All indexes are 0-based. Error messages print bar and beat numbers 1-based. |
+| Strings | `note.string` indexes `track.tuning`. Index 0 is Guitar Pro's string 1, the highest string. |
+| Time | Integer ticks, 960 per quarter note (`TICKS_PER_QUARTER`). Tick fields end in `Tick` or `Ticks`. `beat.startTick` is relative to its bar. |
+| Order | `song.masterBars` and `track.bars` are in written order. The timeline and `playbackOrder` are in played order, indexed by `playedBar`. |
+| Track kinds | `'stringed'` tracks have a tuning, strings and frets. `'percussion'` notes have a General MIDI drum key. `'pitched'` notes (piano, horns) have a MIDI pitch. |
+| Ties | A note with `tie.fromPrevious` is not struck. It continues the last note on the same string in the same voice, which has `tie.toNext`. |
+| Grace notes | A grace note is a beat with `beat.grace` set. It takes no time in the written bar. `scheduleTrack` places it before or on the following beat. |
+| Strums | A brush or arpeggio is one beat with one start time. `beat.stroke` gives the type and direction for players that spread the notes. |
+| Pickup bars | A pickup bar has `masterBar.anacrusis` set and keeps its full length. Its beats are at the end of the bar. |
+
+## Errors
+
+Invalid or unreadable files throw a `GuitarProError`.
+
+```ts
+try {
+  parseGuitarPro(bytes);
+} catch (error) {
+  if (error instanceof GuitarProError) {
+    error.message;   // "Cannot read this Guitar Pro 5 (.gp5) file (track 1, bar 18, voice 1, byte 4998): the file ends early. 4 more bytes were needed but only 2 remain."
+    error.format;    // "gp5", or null if the format is unknown
+    error.reason;    // the message without the location
+    error.location;  // { track: 0, bar: 17, voice: 0, byteOffset: 4998 }
   }
 }
 ```
 
-### Browser usage
+Missing required data throws instead of being replaced by a default.
 
-```ts
-// From file input
-const file = input.files[0];
-const data = new Uint8Array(await file.arrayBuffer());
-const song = parseTabFile(data, file.name);
+## API
 
-// From URL
-const response = await fetch('song.gp');
-const data = new Uint8Array(await response.arrayBuffer());
-const song = parseTabFile(data);
+### Parsing
+
+| Export | Description |
+|--------|-------------|
+| `parseGuitarPro(bytes)` | Parses a file of any supported format. |
+| `detectFormat(bytes)` | Returns `'gp'`, `'gpx'`, `'gp5'`, `'gp4'` or `'gp3'`. |
+| `GuitarProError` | Error thrown for invalid files. |
+
+### Playback
+
+| Export | Description |
+|--------|-------------|
+| `scheduleTrack(song, track, timeline?)` | Struck notes of a track in played order, with `startMs` and `endMs`. |
+| `buildTimeline(song, order?)` | Played bars with times. Provides `msAt(playedBar, tick)`, `positionAt(ms)` and `bpmAt(playedBar, tick)`. |
+| `playbackOrder(song)` | Master bar indexes in played order, with the pass number used for alternate endings. |
+| `applyTripletFeel(beats, feel)` | Beat timings with triplet feel applied. |
+| `placeGraceBeats(beats, timings, neighbours)` | Beat timings with grace notes placed. |
+
+### Pitch
+
+| Export | Description |
+|--------|-------------|
+| `midiToPitchClass(midi)` | Pitch class from 0 (C) to 11 (B). |
+| `noteFromPitchClass(pitchClass, preferFlats?)` | Spelling of a pitch class. `.name` is `"F#"`, or `"Gb"` with `preferFlats`. |
+
+All model types are exported. Every field has a doc comment.
+
+## Limitations
+
+- Sound engine (RSE) settings, page layout and stylesheets are not read.
+- Tenuto, single-beat lyrics and dead slaps are not represented.
+- Fermatas and free-time bars do not affect timing.
+- Trill speed is null for `.gp` and `.gpx`, which do not store it.
+- `.gp3` and `.gp4` support is tested with generated files only.
+
+## Development
+
+```bash
+bun install
+bun run test
+bun run typecheck
+bun run build
 ```
 
-## Supported Formats
+Issues and pull requests: [emilienbev/guitarpro-parser](https://github.com/emilienbev/guitarpro-parser).
 
-| Format | Extension | Guitar Pro Version |
-|--------|-----------|-------------------|
-| GP7+   | `.gp`     | Guitar Pro 7, 8   |
-| GPX    | `.gpx`    | Guitar Pro 6      |
-| GP5    | `.gp5`    | Guitar Pro 5      |
-| GP3    | `.gp3`    | Guitar Pro 3      |
+## License
 
-Format is auto-detected from file header.
-
-## API Reference
-
-Main parser. Auto-detects format and returns parsed song.
-
-```ts
-parseTabFile(data: Uint8Array, fileName?: string): TabSong
-```
-
-Detect format without parsing.
-
-```ts
-detectFormat(data: Uint8Array, fileName?: string): 'gpx' | 'gp7' | 'gp5' | 'gp3'
-```
-
-Format-specific parsers if you know the format in advance.
-
-```ts
-parseGpxFile(data: Uint8Array): TabSong
-parseGp5File(data: Uint8Array): TabSong
-parseGp3File(data: Uint8Array): TabSong
-```
-
-Convert rhythm to beat fractions (quarter note = 1.0).
-
-```ts
-durationToBeats('quarter', 0, null);  // 1.0
-durationToBeats('quarter', 1, null);  // 1.5 (dotted)
-durationToBeats('quarter', 0, { num: 3, den: 2 });  // 0.666... (triplet)
-```
-
-Get beat duration in milliseconds at its tempo.
-```ts
-beatDurationMs(beat: TabBeat): number
-```
-
-Calculate musical beat position within a bar (1-based).
-```ts
-musicalBeatPosition(bar: TabBar, beatIdx: number): number
-```
-
-Get the number of musical beats in a bar.
-```ts
-barMusicalBeatCount(bar: TabBar): number
-```
-
-## Type Definitions
-
-```ts
-interface TabSong {
-  title: string;
-  artist: string;
-  album: string;
-  tempo: number;
-  tracks: TabTrack[];
-}
-
-interface TabTrack {
-  id: string;
-  name: string;
-  tuning: Note[];           // Low to high
-  tuningMidi: number[];     // Raw MIDI pitch numbers per string (index 0 = lowest string)
-  capoFret: number;
-  bars: TabBar[];
-}
-
-interface TabBar {
-  index: number;
-  timeSignature: { numerator: number; denominator: number };
-  beats: TabBeat[];
-  repeatStart: boolean;
-  repeatEnd: boolean;
-}
-
-interface TabBeat {
-  notes: TabNote[];
-  duration: Duration;       // "whole" | "half" | "quarter" | "eighth" | "16th" | ...
-  tuplet: { num: number; den: number } | null;
-  dotted: number;
-  isRest: boolean;
-  tempo: number;
-}
-
-interface TabNote {
-  string: number;           // 0-based, 0 = lowest string
-  fret: number;
-  noteName: string;         // "E", "F#", "Bb", etc.
-  pitchClass: PitchClass;   // 0-11 (C=0)
-  
-  // Techniques
-  bend: { origin: number; destination: number; middle: number } | null;
-  slide: number | null;
-  harmonic: string | null;
-  vibrato: string | null;
-  hammerOn: boolean;
-  pullOff: boolean;
-  palmMute: boolean;
-  letRing: boolean;
-  tapped: boolean;
-  muted: boolean;
-  tie: { origin: boolean; destination: boolean };
-  accent: number | null;
-}
-
-interface Note {
-  pitchClass: PitchClass;   // 0-11
-  name: string;             // "E", "F#", "Bb"
-  accidental: 'sharp' | 'flat' | 'natural';
-}
-```
-
+Apache 2.0. See [LICENSE](./LICENSE).

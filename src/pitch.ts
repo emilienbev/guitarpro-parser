@@ -14,17 +14,15 @@
  * limitations under the License.
  */
 
-/**
- * Minimal pitch utilities — inlined from GuitarWeaver's pitch.ts to make
- * this package fully self-contained with zero external dependencies.
- */
+/** Helpers to name a pitch, for example MIDI 66 as "F#" or "Gb". */
 
 /** Chromatic pitch class: 0 = C, 1 = C#/Db, ..., 11 = B */
 export type PitchClass = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 
 export type Accidental = 'sharp' | 'flat' | 'natural';
 
-export interface Note {
+/** How a pitch class is spelled, such as "F#" or "Gb". */
+export interface PitchName {
 	pitchClass: PitchClass;
 	name: string;
 	accidental: Accidental;
@@ -73,7 +71,7 @@ export function noteFromPitchClass(
 	pc: PitchClass,
 	preferFlats = false,
 	octave?: number
-): Note {
+): PitchName {
 	const name = preferFlats ? FLAT_NAMES[pc] : SHARP_NAMES[pc];
 	return {
 		pitchClass: pc,

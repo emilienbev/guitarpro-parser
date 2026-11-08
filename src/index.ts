@@ -15,40 +15,26 @@
  */
 
 /**
- * guitarpro-parser — Pure JavaScript parser for Guitar Pro files.
- *
- * Supports .gpx (GP6), .gp (GP7+), .gp5 (GP5), and .gp3 (GP3) formats.
- * Works in both browser and Node.js environments.
+ * guitarpro-parser reads Guitar Pro files (.gp, .gpx, .gp5, .gp4, .gp3) into
+ * one plain, typed model. It runs in Node and the browser.
  *
  * @example
  * ```ts
- * import { parseTabFile } from 'guitarpro-parser';
- * import { readFileSync } from 'fs';
+ * import { parseGuitarPro } from 'guitarpro-parser';
  *
- * const data = new Uint8Array(readFileSync('song.gp'));
- * const song = parseTabFile(data);
- * console.log(song.title, song.artist, song.tracks.length);
+ * const song = parseGuitarPro(new Uint8Array(await file.arrayBuffer()));
+ * console.log(song.info.title, song.tracks.length);
  * ```
  */
 
-// Primary API
-export { parseTabFile, detectFormat } from './tab-parser.js';
+export { parseGuitarPro } from './parse.js';
+export { detectFormat } from './detect.js';
+export { GuitarProError } from './errors.js';
+export type { ErrorLocation } from './errors.js';
+export type { FileBytes } from './io/input.js';
+export * from './playback/index.js';
 
-// Format-specific parsers
-export { parseGpxFile, gpifToTabSong, durationToBeats, beatDurationMs, musicalBeatPosition, barMusicalBeatCount } from './gpx-parser.js';
-export { parseGp5File } from './gp5-parser.js';
-export { parseGp3File } from './gp3-parser.js';
+export * from './model/index.js';
 
-// Types
-export type {
-	Duration,
-	TabNote,
-	TabBeat,
-	TabBar,
-	TabTrack,
-	TabSong
-} from './types.js';
-
-// Pitch utilities
-export type { PitchClass, Accidental, Note } from './pitch.js';
+export type { PitchClass, Accidental, PitchName } from './pitch.js';
 export { noteFromPitchClass, midiToPitchClass } from './pitch.js';

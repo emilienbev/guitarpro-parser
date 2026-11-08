@@ -1,12 +1,12 @@
 {
   "name": "guitarpro-parser",
-  "version": "1.1.1",
+  "version": "2.0.0",
   "author": "Emilien Bevierre",
   "repository": "github:emilienbev/guitarpro-parser",
   "bugs": {
     "url": "https://github.com/emilienbev/guitarpro-parser/issues"
   },
-  "description": "Pure JavaScript parser for Guitar Pro files (.gp, .gpx, .gp5, .gp3). Zero native dependencies, works in browser and Node.js.",
+  "description": "TypeScript parser for Guitar Pro files (.gp, .gpx, .gp5, .gp4, .gp3). Returns a typed model of the score and computes playback order and timing.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -24,19 +24,22 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "sideEffects": false,
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
     "guitar-pro",
     "gpx",
     "gp5",
+    "gp4",
     "gp3",
     "gp7",
     "tablature",
@@ -52,6 +55,6 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "linkedom": "^0.18.9"
+    "fflate": "^0.8.2"
   }
 }
